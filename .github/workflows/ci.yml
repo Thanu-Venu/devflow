@@ -1,4 +1,4 @@
-name: DevFlow CI
+name: DevFlow CI/CD
 
 on:
   push:
@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
+  ci:
+    name: Continuous Integration
     runs-on: ubuntu-latest
 
     steps:
@@ -36,3 +37,13 @@ jobs:
 
       - name: Build frontend Docker image
         run: docker build -t devflow-frontend ./client
+
+  cd:
+    name: Continuous Deployment
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Render deployment
+        run: curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
