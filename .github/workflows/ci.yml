@@ -62,5 +62,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Trigger Render deployment
-        run: curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+      - name: Trigger Render deployment (backend)
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+
+      - name: Trigger Render deployment (frontend)
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_FRONTEND }}"
