@@ -1,0 +1,427 @@
+From a1906cc17075d86ff561084ef1717dc9454050d4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 17 Aug 2026 08:35:50 +0000
+Subject: [PATCH] fix: add login/register flow and attach JWT to API requests
+
+The backend now requires auth on /api/projects and /api/tasks (previous
+commit), but the frontend never got a corresponding update - it kept
+firing unauthenticated fetch() calls, which surfaced in the browser as
+401s and an 'n.filter is not a function' crash from trying to array-map
+an error response body.
+
+- Add api.js: fetch wrapper that attaches the JWT and, on a 401 (missing/
+  expired token), clears it and signals the app to fall back to login
+  instead of crashing on the error payload
+- Add AuthForm.jsx: login/register screen, toggles between the two modes
+- App.jsx now gates on presence of a token; all data calls go through
+  apiFetch instead of raw fetch()
+- Fix index.html's <title> (was still the Vite default 'client')
+---
+ client/index.html       |   2 +-
+ client/src/App.jsx      |  80 +++++++++++++++++---------------
+ client/src/AuthForm.jsx | 100 ++++++++++++++++++++++++++++++++++++++++
+ client/src/api.js       |  30 ++++++++++++
+ client/src/index.css    |  52 +++++++++++++++++++++
+ 5 files changed, 226 insertions(+), 38 deletions(-)
+ create mode 100644 client/src/AuthForm.jsx
+ create mode 100644 client/src/api.js
+
+diff --git a/client/index.html b/client/index.html
+index 6e56e6e..f576dab 100644
+--- a/client/index.html
++++ b/client/index.html
+@@ -4,7 +4,7 @@
+     <meta charset="UTF-8" />
+     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-    <title>client</title>
++    <title>DevFlow</title>
+   </head>
+   <body>
+     <div id="root"></div>
+diff --git a/client/src/App.jsx b/client/src/App.jsx
+index 5b2d858..18f15be 100644
+--- a/client/src/App.jsx
++++ b/client/src/App.jsx
+@@ -1,8 +1,9 @@
+-import { useEffect, useState } from "react";
+-
+-const API_URL = import.meta.env.VITE_API_URL;
++import { useEffect, useState, useCallback } from "react";
++import { apiFetch } from "./api";
++import AuthForm from "./AuthForm.jsx";
+ 
+ function App() {
++  const [token, setToken] = useState(() => localStorage.getItem("token"));
+   const [projects, setProjects] = useState([]);
+   const [tasks, setTasks] = useState([]);
+   const [projectName, setProjectName] = useState("");
+@@ -10,11 +11,22 @@ function App() {
+   const [selectedProject, setSelectedProject] = useState("");
+   const [loading, setLoading] = useState(true);
+ 
+-  const loadData = async () => {
++  // apiFetch fires this event whenever the API rejects the current token
++  // (expired/invalid) so we fall back to the login screen instead of
++  // crashing on the error response.
++  useEffect(() => {
++    const handleUnauthorized = () => setToken(null);
++    window.addEventListener("devflow:unauthorized", handleUnauthorized);
++    return () => window.removeEventListener("devflow:unauthorized", handleUnauthorized);
++  }, []);
++
++  const loadData = useCallback(async () => {
++    if (!token) return;
++    setLoading(true);
+     try {
+       const [projectsRes, tasksRes] = await Promise.all([
+-        fetch(`${API_URL}/projects`),
+-        fetch(`${API_URL}/tasks`)
++        apiFetch("/projects"),
++        apiFetch("/tasks")
+       ]);
+ 
+       const projectsData = await projectsRes.json();
+@@ -31,22 +43,26 @@ function App() {
+     } finally {
+       setLoading(false);
+     }
+-  };
++  }, [token]);
+ 
+   useEffect(() => {
+     loadData();
+-  }, []);
++  }, [loadData]);
++
++  const handleLogout = () => {
++    localStorage.removeItem("token");
++    setToken(null);
++    setProjects([]);
++    setTasks([]);
++  };
+ 
+   const createProject = async (e) => {
+     e.preventDefault();
+ 
+     if (!projectName.trim()) return;
+ 
+-    await fetch(`${API_URL}/projects`, {
++    await apiFetch("/projects", {
+       method: "POST",
+-      headers: {
+-        "Content-Type": "application/json"
+-      },
+       body: JSON.stringify({
+         name: projectName,
+         description: "DevFlow project"
+@@ -62,11 +78,8 @@ function App() {
+ 
+     if (!taskTitle.trim() || !selectedProject) return;
+ 
+-    await fetch(`${API_URL}/tasks`, {
++    await apiFetch("/tasks", {
+       method: "POST",
+-      headers: {
+-        "Content-Type": "application/json"
+-      },
+       body: JSON.stringify({
+         title: taskTitle,
+         project: selectedProject
+@@ -78,11 +91,8 @@ function App() {
+   };
+ 
+   const updateTask = async (id, status) => {
+-    await fetch(`${API_URL}/tasks/${id}`, {
++    await apiFetch(`/tasks/${id}`, {
+       method: "PUT",
+-      headers: {
+-        "Content-Type": "application/json"
+-      },
+       body: JSON.stringify({ status })
+     });
+ 
+@@ -90,20 +100,20 @@ function App() {
+   };
+ 
+   const deleteTask = async (id) => {
+-    await fetch(`${API_URL}/tasks/${id}`, {
+-      method: "DELETE"
+-    });
++    await apiFetch(`/tasks/${id}`, { method: "DELETE" });
+ 
+     loadData();
+   };
+ 
++  if (!token) {
++    return <AuthForm onAuthenticated={() => setToken(localStorage.getItem("token"))} />;
++  }
++
+   if (loading) {
+     return <div className="loading">Loading DevFlow...</div>;
+   }
+ 
+-  const completed = tasks.filter(
+-    (task) => task.status === "DONE"
+-  ).length;
++  const completed = tasks.filter((task) => task.status === "DONE").length;
+ 
+   return (
+     <div className="app">
+@@ -112,6 +122,9 @@ function App() {
+           <h1>DevFlow</h1>
+           <p>Team Project & Issue Management</p>
+         </div>
++        <button className="logout-btn" onClick={handleLogout}>
++          Log out
++        </button>
+       </header>
+ 
+       <main>
+@@ -195,21 +208,14 @@ function App() {
+ 
+                 <select
+                   value={task.status}
+-                  onChange={(e) =>
+-                    updateTask(task._id, e.target.value)
+-                  }
++                  onChange={(e) => updateTask(task._id, e.target.value)}
+                 >
+                   <option value="TODO">TODO</option>
+-                  <option value="IN_PROGRESS">
+-                    IN PROGRESS
+-                  </option>
++                  <option value="IN_PROGRESS">IN PROGRESS</option>
+                   <option value="DONE">DONE</option>
+                 </select>
+ 
+-                <button
+-                  className="delete"
+-                  onClick={() => deleteTask(task._id)}
+-                >
++                <button className="delete" onClick={() => deleteTask(task._id)}>
+                   Delete
+                 </button>
+               </div>
+@@ -221,4 +227,4 @@ function App() {
+   );
+ }
+ 
+-export default App;
+\ No newline at end of file
++export default App;
+diff --git a/client/src/AuthForm.jsx b/client/src/AuthForm.jsx
+new file mode 100644
+index 0000000..db5a52a
+--- /dev/null
++++ b/client/src/AuthForm.jsx
+@@ -0,0 +1,100 @@
++import { useState } from "react";
++import { API_URL } from "./api";
++
++function AuthForm({ onAuthenticated }) {
++  const [mode, setMode] = useState("login");
++  const [name, setName] = useState("");
++  const [email, setEmail] = useState("");
++  const [password, setPassword] = useState("");
++  const [error, setError] = useState("");
++  const [submitting, setSubmitting] = useState(false);
++
++  const handleSubmit = async (e) => {
++    e.preventDefault();
++    setError("");
++    setSubmitting(true);
++
++    try {
++      const path = mode === "login" ? "/auth/login" : "/auth/register";
++      const body =
++        mode === "login" ? { email, password } : { name, email, password };
++
++      const res = await fetch(`${API_URL}${path}`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify(body)
++      });
++
++      const data = await res.json();
++
++      if (!res.ok) {
++        setError(data.message || "Something went wrong");
++        return;
++      }
++
++      localStorage.setItem("token", data.token);
++      onAuthenticated();
++    } catch {
++      setError("Could not reach the server");
++    } finally {
++      setSubmitting(false);
++    }
++  };
++
++  return (
++    <div className="auth-page">
++      <h1>{mode === "login" ? "Log in to DevFlow" : "Create your DevFlow account"}</h1>
++
++      {error && <p className="error-text">{error}</p>}
++
++      <form onSubmit={handleSubmit}>
++        {mode === "register" && (
++          <input
++            placeholder="Name"
++            value={name}
++            onChange={(e) => setName(e.target.value)}
++            required
++          />
++        )}
++        <input
++          type="email"
++          placeholder="Email"
++          value={email}
++          onChange={(e) => setEmail(e.target.value)}
++          required
++        />
++        <input
++          type="password"
++          placeholder="Password"
++          value={password}
++          onChange={(e) => setPassword(e.target.value)}
++          minLength={6}
++          required
++        />
++        <button type="submit" disabled={submitting}>
++          {submitting ? "Please wait..." : mode === "login" ? "Log in" : "Register"}
++        </button>
++      </form>
++
++      <p className="switch-link">
++        {mode === "login" ? (
++          <>
++            No account?{" "}
++            <button type="button" className="link-btn" onClick={() => setMode("register")}>
++              Register
++            </button>
++          </>
++        ) : (
++          <>
++            Already have an account?{" "}
++            <button type="button" className="link-btn" onClick={() => setMode("login")}>
++              Log in
++            </button>
++          </>
++        )}
++      </p>
++    </div>
++  );
++}
++
++export default AuthForm;
+diff --git a/client/src/api.js b/client/src/api.js
+new file mode 100644
+index 0000000..aaec373
+--- /dev/null
++++ b/client/src/api.js
+@@ -0,0 +1,30 @@
++export const API_URL = import.meta.env.VITE_API_URL;
++
++function authHeaders() {
++  const token = localStorage.getItem("token");
++  return token ? { Authorization: `Bearer ${token}` } : {};
++}
++
++// Wraps fetch() so every call to a protected endpoint automatically carries
++// the JWT. If the token is missing/expired the API replies 401 - instead of
++// letting callers try to .filter()/.map() an error object (which is what
++// was crashing the app), we clear the stale token and force back to the
++// login screen.
++export async function apiFetch(path, options = {}) {
++  const res = await fetch(`${API_URL}${path}`, {
++    ...options,
++    headers: {
++      "Content-Type": "application/json",
++      ...authHeaders(),
++      ...(options.headers || {})
++    }
++  });
++
++  if (res.status === 401) {
++    localStorage.removeItem("token");
++    window.dispatchEvent(new Event("devflow:unauthorized"));
++    throw new Error("Not authorized");
++  }
++
++  return res;
++}
+diff --git a/client/src/index.css b/client/src/index.css
+index 718e0bf..6ec6f1e 100644
+--- a/client/src/index.css
++++ b/client/src/index.css
+@@ -13,6 +13,9 @@ header {
+   background: #111827;
+   color: white;
+   padding: 25px 8%;
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
+ }
+ 
+ header h1 {
+@@ -25,6 +28,55 @@ header p {
+   color: #9ca3af;
+ }
+ 
++.logout-btn {
++  background: rgba(255, 255, 255, 0.12);
++}
++
++.logout-btn:hover {
++  background: rgba(255, 255, 255, 0.2);
++}
++
++.auth-page {
++  max-width: 380px;
++  margin: 80px auto;
++  background: white;
++  padding: 32px;
++  border-radius: 10px;
++  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
++}
++
++.auth-page h1 {
++  font-size: 22px;
++  margin: 0 0 20px;
++  color: #111827;
++}
++
++.auth-page .error-text {
++  color: #dc2626;
++  font-size: 14px;
++  margin-bottom: 12px;
++}
++
++.auth-page .switch-link {
++  margin-top: 16px;
++  font-size: 14px;
++  color: #6b7280;
++  text-align: center;
++}
++
++.link-btn {
++  background: none;
++  color: #2563eb;
++  padding: 0;
++  text-decoration: underline;
++  width: auto;
++  display: inline;
++}
++
++.link-btn:hover {
++  background: none;
++}
++
+ main {
+   max-width: 1100px;
+   margin: 40px auto;
+-- 
+2.43.0
+

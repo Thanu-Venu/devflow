@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
-
-const API_URL = import.meta.env.VITE_API_URL;
+import { useEffect, useState, useCallback } from "react";
+import { apiFetch } from "./api";
+import AuthForm from "./AuthForm.jsx";
 
 function App() {
+  const [token, setToken] = useState(() => localStorage.getItem("token"));
   const [projects, setProjects] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [projectName, setProjectName] = useState("");
@@ -10,11 +11,22 @@ function App() {
   const [selectedProject, setSelectedProject] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const loadData = async () => {
+  // apiFetch fires this event whenever the API rejects the current token
+  // (expired/invalid) so we fall back to the login screen instead of
+  // crashing on the error response.
+  useEffect(() => {
+    const handleUnauthorized = () => setToken(null);
+    window.addEventListener("devflow:unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("devflow:unauthorized", handleUnauthorized);
+  }, []);
+
+  const loadData = useCallback(async () => {
+    if (!token) return;
+    setLoading(true);
     try {
       const [projectsRes, tasksRes] = await Promise.all([
-        fetch(`${API_URL}/projects`),
-        fetch(`${API_URL}/tasks`)
+        apiFetch("/projects"),
+        apiFetch("/tasks")
       ]);
 
       const projectsData = await projectsRes.json();
@@ -31,22 +43,26 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
+
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    setToken(null);
+    setProjects([]);
+    setTasks([]);
+  };
 
   const createProject = async (e) => {
     e.preventDefault();
 
     if (!projectName.trim()) return;
 
-    await fetch(`${API_URL}/projects`, {
+    await apiFetch("/projects", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
       body: JSON.stringify({
         name: projectName,
         description: "DevFlow project"
@@ -62,11 +78,8 @@ function App() {
 
     if (!taskTitle.trim() || !selectedProject) return;
 
-    await fetch(`${API_URL}/tasks`, {
+    await apiFetch("/tasks", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
       body: JSON.stringify({
         title: taskTitle,
         project: selectedProject
@@ -78,11 +91,8 @@ function App() {
   };
 
   const updateTask = async (id, status) => {
-    await fetch(`${API_URL}/tasks/${id}`, {
+    await apiFetch(`/tasks/${id}`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json"
-      },
       body: JSON.stringify({ status })
     });
 
@@ -90,20 +100,20 @@ function App() {
   };
 
   const deleteTask = async (id) => {
-    await fetch(`${API_URL}/tasks/${id}`, {
-      method: "DELETE"
-    });
+    await apiFetch(`/tasks/${id}`, { method: "DELETE" });
 
     loadData();
   };
+
+  if (!token) {
+    return <AuthForm onAuthenticated={() => setToken(localStorage.getItem("token"))} />;
+  }
 
   if (loading) {
     return <div className="loading">Loading DevFlow...</div>;
   }
 
-  const completed = tasks.filter(
-    (task) => task.status === "DONE"
-  ).length;
+  const completed = tasks.filter((task) => task.status === "DONE").length;
 
   return (
     <div className="app">
@@ -112,6 +122,9 @@ function App() {
           <h1>DevFlow</h1>
           <p>Team Project & Issue Management</p>
         </div>
+        <button className="logout-btn" onClick={handleLogout}>
+          Log out
+        </button>
       </header>
 
       <main>
@@ -195,21 +208,14 @@ function App() {
 
                 <select
                   value={task.status}
-                  onChange={(e) =>
-                    updateTask(task._id, e.target.value)
-                  }
+                  onChange={(e) => updateTask(task._id, e.target.value)}
                 >
                   <option value="TODO">TODO</option>
-                  <option value="IN_PROGRESS">
-                    IN PROGRESS
-                  </option>
+                  <option value="IN_PROGRESS">IN PROGRESS</option>
                   <option value="DONE">DONE</option>
                 </select>
 
-                <button
-                  className="delete"
-                  onClick={() => deleteTask(task._id)}
-                >
+                <button className="delete" onClick={() => deleteTask(task._id)}>
                   Delete
                 </button>
               </div>
