@@ -6,7 +6,8 @@ const createProject = async (req, res) => {
 
         const project = await Project.create({
             name,
-            description
+            description,
+            owner: req.user._id
         });
 
         res.status(201).json(project);
@@ -17,7 +18,7 @@ const createProject = async (req, res) => {
 
 const getProjects = async (req, res) => {
     try {
-        const projects = await Project.find().sort({ createdAt: -1 });
+        const projects = await Project.find({ owner: req.user._id }).sort({ createdAt: -1 });
 
         res.json(projects);
     } catch (error) {

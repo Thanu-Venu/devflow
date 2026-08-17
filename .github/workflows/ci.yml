@@ -10,6 +10,16 @@ jobs:
   ci:
     name: Continuous Integration
     runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "echo 'db.runCommand(\"ping\").ok' | mongosh localhost:27017/test --quiet"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -27,6 +37,9 @@ jobs:
       - name: Run backend tests
         working-directory: server
         run: npm test
+        env:
+          TEST_MONGO_URI: mongodb://localhost:27017/devflow-test
+          JWT_SECRET: ci_test_secret
 
       - name: Install frontend dependencies
         working-directory: client
